@@ -1,0 +1,17 @@
+{
+  "max_age_days": 14,
+  "per_channel": 3,
+  "channels": [
+    {"name": "Wemmbu",     "handle": "Wemmbu"},
+    {"name": "FlameFrags", "handle": "FlameFrags"},
+    {"name": "ParrotX2",   "handle": "ParrotX2"},
+    {"name": "SpokeIsHere","handle": "SpokeIsHere"},
+    {"name": "Micode",     "handle": "Micode"},
+    {"name": "MinuteTech", "handle": "MinuteTech"},
+    {"name": "WyLL",       "handle": "WyLL"},
+    {"name": "F1", "handle": "F1", "rules": [
+      {"label": "Course",         "match": "race highlights",       "exclude": "sprint|extended|preview"},
+      {"label": "Qualifications", "match": "qualifying highlights", "exclude": "sprint|extended|preview"}
+    ]}
+  ]
+}
