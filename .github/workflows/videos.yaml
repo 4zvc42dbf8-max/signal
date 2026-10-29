@@ -1,0 +1,41 @@
+name: Update videos
+
+on:
+  push:
+    paths:
+      - '.github/workflows/videos.yml'
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-videos
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Get the files
+        uses: actions/checkout@v4
+
+      - name: Collect the videos
+        run: python3 fetch_videos.py
+
+      - name: Save the result
+        run: |
+          git config user.name "signal-bot"
+          git config user.email "signal-bot@users.noreply.github.com"
+          git add videos.json
+          if [ -f state.json ]; then git add state.json; fi
+          if git diff --staged --quiet; then
+            echo "Nothing new to save"
+          else
+            git commit -m "Update videos"
+            git pull --rebase --autostash origin main
+            git push origin HEAD:main
+          fi
