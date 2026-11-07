@@ -119,25 +119,24 @@ def process(args):
     name = ch["name"]
     info = {"name": name, "ok": False}
     try:
-        hkey = name + "|" + (ch.get("handle") or name)
-        cid = ch.get("id") or state["ids"].get(hkey)
-        guessed = state.get("guessed", {}).get(hkey, False)
+        cid = ch.get("id") or state["ids"].get(name)
+        guessed = state.get("guessed", {}).get(name, False)
         if not cid:
             cid, guessed = resolve_id(ch)
         if not cid:
             raise RuntimeError("channel not found")
         title, entries = parse_feed(get("https://www.youtube.com/feeds/videos.xml?channel_id=" + cid))
-        state["ids"][hkey] = cid
-        state.setdefault("guessed", {})[hkey] = guessed
+        state["ids"][name] = cid
+        state.setdefault("guessed", {})[name] = guessed
         info.update(ok=True, id=cid, found=title, guessed=guessed)
         cutoff = (NOW - timedelta(days=cfg.get("max_age_days", 21))).isoformat()
         entries.sort(key=lambda v: v["published"], reverse=True)
         if ch.get("rules"):
-            vids = pick_rules(dict(ch, name=name + "|" + cid), entries, state)
+            vids = pick_rules(ch, entries, state)
         else:
             vids = []
             for v in entries:
-                if v["published"] < cutoff or len(vids) >= cfg.get("per_channel", 5):
+                if (v["published"] < cutoff and vids) or len(vids) >= cfg.get("per_channel", 5):   # the latest video is always kept
                     break
                 if not is_short(v["id"], v["title"], state):
                     vids.append(v)

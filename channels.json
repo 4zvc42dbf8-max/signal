@@ -1,14 +1,14 @@
 {
-  "max_age_days": 14,
+  "max_age_days": 30,
   "per_channel": 3,
   "channels": [
     {
       "name": "Wemmbu",
-      "handle": "wemmbumc"
+      "handle": "Wemmbu"
     },
     {
       "name": "FlameFrags",
-      "handle": "FlameFragsMC"
+      "handle": "FlameFrags"
     },
     {
       "name": "ParrotX2",
@@ -16,7 +16,7 @@
     },
     {
       "name": "SpokeIsHere",
-      "handle": "Spokeishere"
+      "handle": "SpokeIsHere"
     },
     {
       "name": "Micode",
@@ -24,15 +24,15 @@
     },
     {
       "name": "MinuteTech",
-      "handle": "minutetechmc"
+      "handle": "MinuteTech"
     },
     {
       "name": "WyLL",
-      "handle": "wyll_"
+      "handle": "WyLL"
     },
     {
       "name": "F1",
-      "handle": "Formula1",
+      "handle": "F1",
       "rules": [
         {
           "label": "Course",
