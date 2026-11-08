@@ -1,5 +1,5 @@
 {
-  "max_age_days": 30,
+  "max_age_days": 10,
   "per_channel": 3,
   "channels": [
     {
