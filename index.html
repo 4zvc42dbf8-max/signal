@@ -178,6 +178,7 @@ h1{font-family:var(--serif);font-variant:small-caps;font-size:25px;font-weight:6
 <div id="sheet"><div class="sbox"><div class="grab" id="grab"></div><div id="sbody"></div></div></div>
 
 <script>
+const VERSION=10;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -296,36 +297,32 @@ function parseRss(xml){
   return{title:feedTitle.trim(),videos:out};
 }
 const short=v=>/#shorts?\b/i.test(v.title||'')||v.isShort||(v.len!=null&&v.len>0&&v.len<=61);
-const tabCache={};
-async function longIds(ch){                        // ids shown on the channel's Videos tab (it never lists Shorts)
-  if(tabCache[ch.id]&&Date.now()-tabCache[ch.id].t<6e5)return tabCache[ch.id].s;
-  const page='https://www.youtube.com/channel/'+ch.id+'/videos';
-  const s=await firstOk(viaProxy(page).map(f=>async()=>{const html=await f();const m=/var ytInitialData = (\{.*?\});<\/script>/s.exec(html);if(!m)return null;const out=[];ytWalk(JSON.parse(m[1]),out);return out.length?new Set(out.map(x=>x.id)):null}));
-  tabCache[ch.id]={t:Date.now(),s};return s;
+const SH=ld('sig_sh',{});                            // video id -> true if it is a Short (vertical)
+async function isShortId(id){
+  if(id in SH)return SH[id];
+  try{const d=await getJ('https://www.youtube.com/oembed?format=json&url='+encodeURIComponent('https://www.youtube.com/watch?v='+id),5000);
+    if(d&&d.width&&d.height){SH[id]=d.height>d.width;return SH[id]}}catch(e){}
+  return false;                                        // unknown: keep the video
 }
 async function noShorts(ch,vids){
-  const base=vids;vids=vids.filter(v=>!short(v));
-  const known=new Set((VID[ch.k]||[]).map(v=>v.id));
-  if(!vids.length||vids.every(v=>known.has(v.id)))return vids;         // nothing new: no extra request
-  try{
-    const ids=await longIds(ch);
-    const hit=vids.filter(v=>ids.has(v.id)).length;
-    if(hit<Math.min(2,vids.length))return vids;                        // the page read is not this channel's list: do not trust it
-    const out=vids.filter(v=>ids.has(v.id)||known.has(v.id));
-    return out.length?out:vids;
-  }catch(e){return vids}
+  vids=vids.filter(v=>!short(v));
+  const todo=vids.filter(v=>!(v.id in SH)).slice(0,12);
+  if(todo.length){await Promise.race([Promise.all(todo.map(v=>isShortId(v.id))),new Promise(r=>setTimeout(r,6000))]);clearTimeout(noShorts.t);noShorts.t=setTimeout(()=>{const k=Object.keys(SH);if(k.length>600)k.slice(0,k.length-600).forEach(x=>delete SH[x]);st('sig_sh',SH)},1500)}
+  return vids.filter(v=>SH[v.id]!==true);
 }
 async function fetchFeed(ch){
-  if(!ch.id){ch.id=await resolveHandle(ch.handle);saveCH()}
+  ch.dbg=[];const note=(n,e)=>{ch.dbg.push(n+': '+((e&&e.message)||e||'vide'))};
+  if(!ch.id){try{ch.id=await resolveHandle(ch.handle);saveCH()}catch(e){note('identifiant',e);throw e}}
   const url='https://www.youtube.com/feeds/videos.xml?channel_id='+ch.id;
-  const fns=[async()=>{const d=await getJ('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(url),6000);
-    if(!d||d.status!=='ok'||!(d.items||[]).length)return null;
-    return{title:(d.feed&&d.feed.title)||'',videos:d.items.map(x=>({id:(/(?:yt:video:|v=)([\w-]{11})/.exec((x.guid||'')+' '+(x.link||''))||[])[1],title:(x.title||'').trim(),published:new Date(String(x.pubDate).replace(' ','T')+'Z').toISOString()})).filter(x=>x.id)}}];
-  viaProxy(url).forEach(f=>fns.push(async()=>{const r=parseRss(await f());return r.videos.length?r:null}));
-  fns.push(()=>api('/channel/'+ch.id,'/api/v1/channels/'+ch.id+'/latest',
+  const wrap=(n,f)=>async()=>{try{const r=await f();if(r&&r.videos&&r.videos.length){ch.src=n;return r}note(n,'aucune vidéo')}catch(e){note(n,e)}return null};
+  const fns=[wrap('rss2json',async()=>{const d=await getJ('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(url),7000);
+    if(!d||d.status!=='ok')throw new Error((d&&d.message)||'refusé');
+    return{title:(d.feed&&d.feed.title)||'',videos:(d.items||[]).map(x=>({id:(/(?:yt:video:|v=)([\w-]{11})/.exec((x.guid||'')+' '+(x.link||''))||[])[1],title:(x.title||'').trim(),published:new Date(String(x.pubDate).replace(' ','T')+'Z').toISOString()})).filter(x=>x.id&&x.published!=='Invalid Date')}})];
+  PROXIES.forEach((p,i)=>fns.push(wrap('proxy'+(i+1),async()=>parseRss(await getT(p(url),7000)))));
+  fns.push(wrap('piped/invidious',()=>api('/channel/'+ch.id,'/api/v1/channels/'+ch.id+'/latest',
     d=>d&&d.relatedStreams?{title:d.name,videos:d.relatedStreams.filter(x=>x.type!=='channel'&&x.url).map(x=>({id:(/v=([\w-]{11})/.exec(x.url)||[])[1],title:x.title,published:new Date(x.uploaded>1e11?x.uploaded:Date.now()).toISOString(),isShort:x.isShort,len:x.duration})).filter(x=>x.id)}:null,
-    d=>Array.isArray(d)?{title:'',videos:d.map(x=>({id:x.videoId,title:x.title,published:new Date((x.published||0)*1000).toISOString(),len:x.lengthSeconds}))}:null));
-  return firstOk(fns);
+    d=>Array.isArray(d)?{title:'',videos:d.map(x=>({id:x.videoId,title:x.title,published:new Date((x.published||0)*1000).toISOString(),len:x.lengthSeconds}))}:null)));
+  const r=await firstOk(fns,1500);return r;
 }
 async function refreshChannels(force){
   const now0=Date.now(),wait=c=>c.fails?Math.min(30,5*Math.pow(2,c.fails-1))*60000:3*60000;     // failing channels are retried less and less often
@@ -336,7 +333,7 @@ async function refreshChannels(force){
     const nv=(await noShorts(ch,r.videos)).slice(0,30).map(v=>({id:v.id,title:v.title,published:v.published}));
     if(JSON.stringify(nv)!==JSON.stringify(VID[ch.k]||[])){VID[ch.k]=nv;dirty=true;soft()}else if(!(DATA.videos||[]).length){dirty=true;soft()}
     ch.t=Date.now();ch.fails=0;ch.err=null;ch.nv=nv.length;if(r.title&&!ch.found){ch.found=r.title}okn++;prog.n++;
-  }catch(e){ch.t=Date.now();ch.fails=Math.min(5,(ch.fails||0)+1);ch.err=ch.id?'lecture des vidéos impossible':'chaîne introuvable'}}};
+  }catch(e){ch.t=Date.now();ch.fails=Math.min(5,(ch.fails||0)+1);ch.err=ch.id?'flux illisible':'chaîne introuvable'}}};
   await Promise.all([worker(),worker(),worker(),worker()]);
   saveVID();saveCH();return okn;
 }
@@ -350,7 +347,7 @@ function feedVideos(){
   (CH||[]).forEach(ch=>{
     let vids=(VID[ch.k]||[]).slice();
     const sv=bySrv[ch.name]||[];
-    if(!vids.length)vids=sv.map(v=>({id:v.id,title:v.title,published:v.published,tag:v.tag}));
+    {const have=new Set(vids.map(v=>v.id));sv.forEach(v=>{if(!have.has(v.id))vids.push({id:v.id,title:v.title,published:v.published,tag:v.tag})})}
     vids.sort((a,b)=>b.published.localeCompare(a.published));
     let sel;
     if(ch.rules&&ch.rules.length){sel=pickRules(ch,vids);sv.filter(v=>v.tag&&!sel.some(x=>x.tag===v.tag)).forEach(v=>sel.push(Object.assign({},v)))}
@@ -590,7 +587,7 @@ function rInfo(){
   <button class="btn" id="toaeth">Envoyer le temps d'écran à Aether</button>
   <p class="note">Copie les 14 derniers jours. Ouvre ensuite Aether > Focus > Temps d'écran et appuie sur « Coller depuis Signal ».</p>
   <button class="btn" id="apis">Sources de données</button>
-  <button class="btn" id="resetSeen">Tout marquer comme non vu</button><button class="btn" id="retryCh">Relire toutes les chaînes maintenant</button><button class="btn primary" id="x">Enregistrer</button>`);
+  <button class="btn" id="resetSeen">Tout marquer comme non vu</button><button class="btn" id="diag">Diagnostic (si une chaîne reste vide)</button><button class="btn" id="retryCh">Relire toutes les chaînes maintenant</button><p class="note" style="text-align:center">Signal · version ${VERSION}</p><button class="btn primary" id="x">Enregistrer</button>`);
   $('x').onclick=()=>{saveLIM();saveCFG();saveCH();saveVID();render();closeSheet();toast('Réglages enregistrés')};$('addch').onclick=()=>rChan(null);$('apis').onclick=rApis;$('toaeth').onclick=sendAether;
   const S={wk:[0,480,5,()=>LIM.wk,v=>LIM.wk=v,saveLIM],we:[0,480,5,()=>LIM.we==null?LIM.wk:LIM.we,v=>LIM.we=v,saveLIM],age:[1,30,1,()=>CFG.age,v=>CFG.age=v,saveCFG]};
   const fm={wk:fmtMin,we:fmtMin,per:v=>String(v),age:v=>v+' j'};
@@ -606,6 +603,7 @@ function rInfo(){
     const r=e.target.closest('#res button');if(r){CFG.res=r.dataset.k;saveCFG();[...$('res').children].forEach(x=>x.classList.toggle('on',x===r));return}
     const a=e.target.closest('#apip button');if(a){CFG.autopip=a.dataset.k==='true';saveCFG();[...$('apip').children].forEach(x=>x.classList.toggle('on',x===a));return}
     const c=e.target.closest('[data-e]');if(c){rChan(c.dataset.e);return}
+    if(e.target.id==='diag'){rDiag();return}
     if(e.target.id==='retryCh'){CH.forEach(c=>{c.t=0;c.fails=0});closeSheet();load(true);toast('Mise à jour…');return}
     if(e.target.id==='resetSeen'){seen={};st('sig_seen',seen);closeSheet();render()}
   };
@@ -615,6 +613,10 @@ async function sendAether(){
   const txt='AETHER-SIGNAL:'+JSON.stringify({v:1,days,lim:{wk:LIM.wk,we:LIM.we==null?LIM.wk:LIM.we}});
   try{await navigator.clipboard.writeText(txt);toast('Copié. Ouvre Aether et colle.')}
   catch(e){openSheet('<h2>Copie ce texte</h2><p class="note">Appui long dans la case, Tout sélectionner, Copier. Puis colle-le dans Aether.</p><div class="fld"><input id="aeth-t" readonly value="'+esc(txt)+'"></div><button class="btn primary" id="x">OK</button>');$('x').onclick=rInfo;const i=$('aeth-t');i.focus();i.select()}
+}
+function rDiag(){
+  openSheet(`<h2>Diagnostic</h2><p class="note">Version ${VERSION}. Chaque ligne : chaîne, identifiant trouvé, source qui a marché, vidéos lues, puis les erreurs des autres sources.</p>`+(CH||[]).map(c=>`<div class="crow"><div><b>${esc(c.name)}</b><small>${c.id?esc(c.id):'identifiant introuvable'} · ${esc(c.src||'—')} · ${c.nv!=null?c.nv+' vidéo(s)':'—'} · ${(VID[c.k]||[]).length} en mémoire${c.err?' · <span class="bad">'+esc(c.err)+'</span>':''}</small>${(c.dbg||[]).length?'<small style="white-space:normal">'+c.dbg.map(esc).join('<br>')+'</small>':''}</div></div>`).join('')+`<button class="btn primary" id="x">Retour</button>`);
+  $('x').onclick=rInfo;
 }
 function rApis(){
   openSheet(`<h2>Sources de données</h2><p class="note">Pour lire les vidéos sans pub et chercher d'anciennes vidéos, l'app utilise des services publics (Piped / Invidious). Ils tombent parfois en panne : l'app en essaie plusieurs. Tu peux ajouter la tienne.</p>
