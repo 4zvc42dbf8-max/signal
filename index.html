@@ -198,6 +198,7 @@ let timeLog=ld('sig_time',{});
 let LIM=ld('sig_lim2',null);
 if(!LIM){const o=ld('sig_limit',60);LIM={wk:o,we:o,finish:false}}
 let CFG=Object.assign({per:3,age:10,res:'auto',mode:'native',autopip:true,apis:[]},ld('sig_cfg',{}));
+if(CFG.age>30||!CFG.age)CFG.age=30;
 if(!CFG.m3){if(CFG.age===14||CFG.age===30)CFG.age=10;CFG.m2=CFG.m3=1;st('sig_cfg',CFG)}
 let filter='all',showSeen=false,playing=null;
 const saveCH=()=>st('sig_ch',CH),saveCFG=()=>st('sig_cfg',CFG),saveLIM=()=>st('sig_lim2',LIM),saveVID=()=>st('sig_vids',VID);
@@ -303,10 +304,16 @@ async function longIds(ch){                        // ids shown on the channel's
   tabCache[ch.id]={t:Date.now(),s};return s;
 }
 async function noShorts(ch,vids){
-  vids=vids.filter(v=>!short(v));
+  const base=vids;vids=vids.filter(v=>!short(v));
   const known=new Set((VID[ch.k]||[]).map(v=>v.id));
-  if(vids.every(v=>known.has(v.id)))return vids;                       // nothing new: no extra request
-  try{const ids=await longIds(ch);return vids.filter(v=>ids.has(v.id)||known.has(v.id))}catch(e){return vids}
+  if(!vids.length||vids.every(v=>known.has(v.id)))return vids;         // nothing new: no extra request
+  try{
+    const ids=await longIds(ch);
+    const hit=vids.filter(v=>ids.has(v.id)).length;
+    if(hit<Math.min(2,vids.length))return vids;                        // the page read is not this channel's list: do not trust it
+    const out=vids.filter(v=>ids.has(v.id)||known.has(v.id));
+    return out.length?out:vids;
+  }catch(e){return vids}
 }
 async function fetchFeed(ch){
   if(!ch.id){ch.id=await resolveHandle(ch.handle);saveCH()}
@@ -326,7 +333,7 @@ async function refreshChannels(force){
   const soft=()=>{if(rt||playing)return;rt=setTimeout(()=>{rt=null;if(dirty){dirty=false;render()}},400)};
   const worker=async()=>{while(i<list.length){const ch=list[i++];try{
     const r=await Promise.race([fetchFeed(ch),new Promise((_,rj)=>setTimeout(()=>rj(new Error('trop long')),14000))]);
-    const nv=(await noShorts(ch,r.videos)).slice(0,15).map(v=>({id:v.id,title:v.title,published:v.published}));
+    const nv=(await noShorts(ch,r.videos)).slice(0,30).map(v=>({id:v.id,title:v.title,published:v.published}));
     if(JSON.stringify(nv)!==JSON.stringify(VID[ch.k]||[])){VID[ch.k]=nv;dirty=true;soft()}else if(!(DATA.videos||[]).length){dirty=true;soft()}
     ch.t=Date.now();ch.fails=0;ch.err=null;ch.nv=nv.length;if(r.title&&!ch.found){ch.found=r.title}okn++;prog.n++;
   }catch(e){ch.t=Date.now();ch.fails=Math.min(5,(ch.fails||0)+1);ch.err=ch.id?'lecture des vidéos impossible':'chaîne introuvable'}}};
@@ -348,7 +355,7 @@ function feedVideos(){
     let sel;
     if(ch.rules&&ch.rules.length){sel=pickRules(ch,vids);sv.filter(v=>v.tag&&!sel.some(x=>x.tag===v.tag)).forEach(v=>sel.push(Object.assign({},v)))}
     else{
-      const n=ch.n||CFG.per,age=ch.age==null?CFG.age:ch.age,cut=age>0?Date.now()-age*864e5:0;
+      const n=ch.n||99,age=ch.age==null?CFG.age:ch.age,cut=age>0?Date.now()-age*864e5:0;
       sel=vids.filter((v,i)=>i===0||new Date(v.published)>=cut).slice(0,n);      // the latest one is always kept
     }
     sel.forEach(v=>out.push(Object.assign({},v,{channel:ch.name,thumb:'https://i.ytimg.com/vi/'+v.id+'/hqdefault.jpg'})));
@@ -574,8 +581,7 @@ function rInfo(){
   <div class="seg" id="apip" style="margin-top:6px">${[[true,'Image dans l\'image auto'],[false,'Manuelle']].map(([v,t])=>`<button data-k="${v}" class="${!!CFG.autopip===v?'on':''}">${t}</button>`).join('')}</div>
   <p class="note">Pour que la vidéo continue quand tu quittes l'app : appuie sur « Image dans l'image » (ou « Plein écran », puis quitte l'app, l'iPhone la met en PiP tout seul).</p>
   <div class="hh">Fil d'actualité</div>
-  ${stepper('per','Vidéos affichées par chaîne','la dernière est toujours gardée',CFG.per,v=>String(v))}
-  ${stepper('age','Âge maximum','au-delà, seule la dernière reste',CFG.age,v=>v?v+' j':'Aucun')}
+  ${stepper('age','Afficher toutes les vidéos des','derniers jours (30 j maximum) · la dernière de chaque chaîne reste toujours',CFG.age,v=>v+' j')}
   <div class="hh">Chaînes suivies</div>
   <div id="chl">${(CH||[]).map(c=>`<div class="crow tap" data-e="${c.k}"><i style="--c:${colOf(c.name)}"></i><div>${esc(c.name)}<small>@${esc(c.handle)}${c.err?' · <span class="bad">'+esc(c.err)+'</span>':c.nv!=null?' · '+c.nv+' récente'+(c.nv>1?'s':''):''}${c.n?' · '+c.n+' vidéo'+(c.n>1?'s':''):''}${c.age!=null?' · '+(c.age?c.age+' j':'sans limite d\'âge'):''}</small></div><span class="chev">›</span></div>`).join('')||'<p class="note">Aucune chaîne.</p>'}</div>
   <button class="btn" id="addch">＋ Ajouter une chaîne (@)</button>
@@ -586,15 +592,14 @@ function rInfo(){
   <button class="btn" id="apis">Sources de données</button>
   <button class="btn" id="resetSeen">Tout marquer comme non vu</button><button class="btn" id="retryCh">Relire toutes les chaînes maintenant</button><button class="btn primary" id="x">Enregistrer</button>`);
   $('x').onclick=()=>{saveLIM();saveCFG();saveCH();saveVID();render();closeSheet();toast('Réglages enregistrés')};$('addch').onclick=()=>rChan(null);$('apis').onclick=rApis;$('toaeth').onclick=sendAether;
-  const S={wk:[0,480,5,()=>LIM.wk,v=>LIM.wk=v,saveLIM],we:[0,480,5,()=>LIM.we==null?LIM.wk:LIM.we,v=>LIM.we=v,saveLIM],per:[1,10,1,()=>CFG.per,v=>CFG.per=v,saveCFG],age:[0,120,1,()=>CFG.age,v=>CFG.age=v,saveCFG]};
-  const fm={wk:fmtMin,we:fmtMin,per:v=>String(v),age:v=>v?v+' j':'Aucun'};
+  const S={wk:[0,480,5,()=>LIM.wk,v=>LIM.wk=v,saveLIM],we:[0,480,5,()=>LIM.we==null?LIM.wk:LIM.we,v=>LIM.we=v,saveLIM],age:[1,30,1,()=>CFG.age,v=>CFG.age=v,saveCFG]};
+  const fm={wk:fmtMin,we:fmtMin,per:v=>String(v),age:v=>v+' j'};
   const sbox=$('sbody');
   sbox.onclick=e=>{
     const b=e.target.closest('[data-s]');
     if(b){const k=b.dataset.s,[mn,mx,stp,get,set,save]=S[k];let v=get();const d=+b.dataset.d;
       if((k==='wk'||k==='we')&&v>=60&&d>0)v+=15*d;else if((k==='wk'||k==='we')&&v>60&&d<0)v-=15;else v+=d*stp;
-      if(k==='age'&&(d>0)&&v>=30)v+=6;
-      v=clamp(v,mn,mx);set(v);save();$('v-'+k).textContent=fm[k](v);render();return}
+            v=clamp(v,mn,mx);set(v);save();$('v-'+k).textContent=fm[k](v);render();return}
     const p=e.target.closest('#presets button');if(p){LIM.wk=LIM.we=+p.dataset.m;saveLIM();$('v-wk').textContent=fmtMin(LIM.wk);$('v-we').textContent=fmtMin(LIM.we);render();return}
     const f=e.target.closest('#fin button');if(f){LIM.finish=f.dataset.f==='true';saveLIM();[...$('fin').children].forEach(x=>x.classList.toggle('on',x===f));return}
     const m=e.target.closest('#mode button');if(m){CFG.mode=m.dataset.k;saveCFG();[...$('mode').children].forEach(x=>x.classList.toggle('on',x===m));return}
@@ -630,8 +635,8 @@ function rChan(k){
   <div class="fld"><label>Identifiant YouTube (@)</label><input id="c-h" placeholder="@Micode" value="${ch?'@'+esc(ch.handle):''}" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
   <div class="fld"><label>ID de chaîne (facultatif, UC…)</label><input id="c-i" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx" value="${ch&&ch.id?esc(ch.id):''}" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
   <div class="fld"><label>Nom affiché</label><input id="c-n" placeholder="Comme dans l'app" value="${ch?esc(ch.name):''}" maxlength="24"></div>
-  <div class="step"><div><label>Vidéos dans le fil</label><small>par défaut : ${CFG.per}</small></div><div class="stp"><button data-s="n" data-d="-1">−</button><b id="v-n">${ch&&ch.n?ch.n:'Défaut'}</b><button data-s="n" data-d="1">+</button></div></div>
-  <div class="step"><div><label>Âge maximum</label><small>la dernière vidéo reste toujours</small></div><div class="stp"><button data-s="a" data-d="-1">−</button><b id="v-a">${ch&&ch.age!=null?(ch.age?ch.age+' j':'Aucun'):'Défaut'}</b><button data-s="a" data-d="1">+</button></div></div>
+  <div class="step"><div><label>Vidéos dans le fil</label><small>par défaut : toutes</small></div><div class="stp"><button data-s="n" data-d="-1">−</button><b id="v-n">${ch&&ch.n?ch.n:'Défaut'}</b><button data-s="n" data-d="1">+</button></div></div>
+  <div class="step"><div><label>Âge maximum</label><small>la dernière vidéo reste toujours</small></div><div class="stp"><button data-s="a" data-d="-1">−</button><b id="v-a">${ch&&ch.age!=null?(ch.age+' j'):'Défaut'}</b><button data-s="a" data-d="1">+</button></div></div>
   <p class="note" id="c-st">${ch?'':'Tape le @ de la chaîne puis appuie sur Vérifier.'}</p>
   <button class="btn primary" id="c-ok">${ch?'Enregistrer':'Vérifier et ajouter'}</button>
   ${ch?'<button class="btn" id="c-search">Chercher d\'anciennes vidéos</button><button class="btn danger" id="c-del">Supprimer cette chaîne</button>':''}
@@ -639,8 +644,8 @@ function rChan(k){
   let n=ch?ch.n:null,a=ch?ch.age:null;
   $('x').onclick=rInfo;
   $('sbody').onclick=e=>{const b=e.target.closest('[data-s]');if(!b)return;const d=+b.dataset.d;
-    if(b.dataset.s==='n'){n=n==null?(d>0?CFG.per+1:CFG.per-1):n+d;n=clamp(n,1,10);$('v-n').textContent=n}
-    else{const cur=a==null?CFG.age:a;a=clamp(d>0?(cur>=30?cur+6:cur+1):(cur>30?cur-6:cur-1),0,120);$('v-a').textContent=a?a+' j':'Aucun'}};
+    if(b.dataset.s==='n'){n=n==null?(d>0?3:0):n+d;n=n<1?null:clamp(n,1,30);$('v-n').textContent=n||'Défaut'}
+    else{const cur=a==null?CFG.age:a;a=clamp(cur+d,1,30);$('v-a').textContent=a+' j'}};
   if(ch){$('c-del').onclick=()=>{if(!confirm('Supprimer '+ch.name+' ?'))return;CH=CH.filter(c=>c.k!==ch.k);delete VID[ch.k];saveCH();saveVID();render();rInfo()};
     $('c-search').onclick=()=>rSearch(ch.k)}
   $('c-ok').onclick=async()=>{
@@ -661,7 +666,7 @@ function rChan(k){
       const nc=ch||{k:uid(),rules:null};
       Object.assign(nc,{name,handle:h,id,n,age:a,found,err:null,fails:0});
       if(!ch)CH.push(nc);
-      VID[nc.k]=(await noShorts(nc,r.videos)).slice(0,15).map(v=>({id:v.id,title:v.title,published:v.published}));
+      VID[nc.k]=(await noShorts(nc,r.videos)).slice(0,30).map(v=>({id:v.id,title:v.title,published:v.published}));
       saveCH();saveVID();render();
       openSheet(`<div class="lock"><div class="big">✅</div><h2>${esc(name)}</h2><p class="note">Chaîne trouvée : ${esc(found)}.${r.videos[0]?'<br>Dernière vidéo : '+esc(r.videos[0].title):''}</p></div><button class="btn primary" id="x">OK</button><button class="btn" id="y">Modifier</button>`);
       $('x').onclick=rInfo;$('y').onclick=()=>rChan(nc.k);

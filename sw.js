@@ -1,5 +1,5 @@
 // Offline support for Signal. Bump CACHE to force a refresh of the app files.
-const CACHE = 'signal-v8';
+const CACHE = 'signal-v9';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
