@@ -267,14 +267,20 @@ async function seedChannels(){
   saveCH();
 }
 async function resolveHandle(h){
-  h=h.replace(/^@/,'').trim();
-  const yt='https://www.youtube.com/@'+h;
+  h=String(h).trim();
+  const direct=/(UC[0-9A-Za-z_-]{22})/.exec(h);if(direct&&/^(https?:\/\/.*\/channel\/)?UC[0-9A-Za-z_-]{22}$/.test(h))return direct[1];
+  h=h.replace(/^@/,'');
+  const yt='https://www.youtube.com/@'+h,eh=encodeURIComponent(h),errs=[];
+  const UC=x=>x&&/^UC[0-9A-Za-z_-]{22}$/.test(x)?x:null;
   const fns=[];
-  fns.push(async()=>{const d=await getJ('https://yt.lemnoslife.com/channels?part=id&handle=@'+encodeURIComponent(h),5000);const x=d&&d.items&&d.items[0];return x&&x.id&&/^UC/.test(x.id)?x.id:null});
-  fns.push(()=>api(null,'/api/v1/resolveurl?url='+encodeURIComponent(yt),null,d=>d&&d.ucid?d.ucid:null));
-  viaProxy(yt).forEach(f=>fns.push(async()=>{const html=await f();for(const rx of [/<meta itemprop="(?:identifier|channelId)" content="(UC[0-9A-Za-z_-]{22})"/,/"externalId":"(UC[0-9A-Za-z_-]{22})"/,/rel="canonical" href="https:\/\/www\.youtube\.com\/channel\/(UC[0-9A-Za-z_-]{22})"/,/"channelId":"(UC[0-9A-Za-z_-]{22})"/]){const m=rx.exec(html);if(m)return m[1]}return null}));
-  fns.push(()=>api('/search?q='+encodeURIComponent(h)+'&filter=channels',null,d=>{const it=(d&&d.items||[])[0];const m=it&&/(UC[0-9A-Za-z_-]{22})/.exec(it.url||'');return m?m[1]:null},null));
-  return firstOk(fns);
+  const lem=u=>async()=>{const d=await getJ(u,7000);const x=d&&d.items&&d.items[0];return UC(x&&x.id)};
+  fns.push(lem('https://yt.lemnoslife.com/noKey/channels?part=id&forHandle=@'+eh));
+  fns.push(lem('https://yt.lemnoslife.com/channels?part=id&handle=@'+eh));
+  fns.push(()=>api(null,'/api/v1/resolveurl?url='+encodeURIComponent(yt),null,d=>UC(d&&d.ucid)));
+  fns.push(()=>api(null,'/api/v1/search?q='+eh+'&type=channel',null,d=>{const it=(Array.isArray(d)?d:[]).find(x=>x.type==='channel'&&(String(x.authorUrl||'').toLowerCase().includes('@'+h.toLowerCase())||String(x.author||'').toLowerCase().replace(/\s/g,'')===h.toLowerCase()))||(Array.isArray(d)?d:[]).find(x=>x.type==='channel');return UC(it&&it.authorId)}));
+  viaProxy(yt).forEach(f=>fns.push(async()=>{const html=await f();for(const rx of [/<meta itemprop="(?:identifier|channelId)" content="(UC[0-9A-Za-z_-]{22})"/,/"externalId":"(UC[0-9A-Za-z_-]{22})"/,/rel="canonical" href="https:\/\/www\.youtube\.com\/channel\/(UC[0-9A-Za-z_-]{22})"/,/"channelId":"(UC[0-9A-Za-z_-]{22})"/,/channel_id=(UC[0-9A-Za-z_-]{22})/]){const m=rx.exec(html);if(m)return m[1]}return null}));
+  fns.push(()=>api('/search?q='+eh+'&filter=channels',null,d=>{const its=(d&&d.items||[]);const it=its.find(x=>String(x.name||'').toLowerCase().replace(/\s/g,'')===h.toLowerCase())||its[0];const m=it&&/(UC[0-9A-Za-z_-]{22})/.exec(it.url||'');return m?m[1]:null},null));
+  return firstOk(fns,700);
 }
 function parseRss(xml){
   const doc=new DOMParser().parseFromString(xml,'text/xml');
@@ -303,7 +309,7 @@ async function noShorts(ch,vids){
   try{const ids=await longIds(ch);return vids.filter(v=>ids.has(v.id)||known.has(v.id))}catch(e){return vids}
 }
 async function fetchFeed(ch){
-  if(!ch.id)ch.id=await resolveHandle(ch.handle);
+  if(!ch.id){ch.id=await resolveHandle(ch.handle);saveCH()}
   const url='https://www.youtube.com/feeds/videos.xml?channel_id='+ch.id;
   const fns=[async()=>{const d=await getJ('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(url),6000);
     if(!d||d.status!=='ok'||!(d.items||[]).length)return null;
@@ -322,9 +328,9 @@ async function refreshChannels(force){
     const r=await Promise.race([fetchFeed(ch),new Promise((_,rj)=>setTimeout(()=>rj(new Error('trop long')),14000))]);
     const nv=(await noShorts(ch,r.videos)).slice(0,15).map(v=>({id:v.id,title:v.title,published:v.published}));
     if(JSON.stringify(nv)!==JSON.stringify(VID[ch.k]||[])){VID[ch.k]=nv;dirty=true;soft()}else if(!(DATA.videos||[]).length){dirty=true;soft()}
-    ch.t=Date.now();ch.fails=0;if(r.title&&!ch.found){ch.found=r.title}okn++;prog.n++;
-  }catch(e){ch.t=Date.now();ch.fails=Math.min(5,(ch.fails||0)+1)}}};
-  await Promise.all([worker(),worker(),worker(),worker(),worker(),worker()]);
+    ch.t=Date.now();ch.fails=0;ch.err=null;ch.nv=nv.length;if(r.title&&!ch.found){ch.found=r.title}okn++;prog.n++;
+  }catch(e){ch.t=Date.now();ch.fails=Math.min(5,(ch.fails||0)+1);ch.err=ch.id?'lecture des vidéos impossible':'chaîne introuvable'}}};
+  await Promise.all([worker(),worker(),worker(),worker()]);
   saveVID();saveCH();return okn;
 }
 
@@ -402,12 +408,20 @@ function render(){
 function openSheet(html){$('sbody').innerHTML=html;const s=$('sheet');s.classList.remove('closing');s.classList.add('show');s.querySelector('.sbox').scrollTop=0}
 function closeSheet(){const s=$('sheet');if(!s.classList.contains('show'))return;stopPlay();s.classList.add('closing');setTimeout(()=>{s.classList.remove('show','closing');$('sbody').innerHTML=''},280)}
 $('sheet').addEventListener('click',e=>{if(e.target===$('sheet'))closeSheet()});
-(function(){const g=$('grab'),box=$('sheet').querySelector('.sbox');let y0=null,dy=0;
-  g.style.touchAction='none';
-  g.addEventListener('pointerdown',e=>{y0=e.clientY;dy=0;g.setPointerCapture(e.pointerId);box.style.animation='none'});
-  g.addEventListener('pointermove',e=>{if(y0==null)return;dy=Math.max(0,e.clientY-y0);box.style.transform='translateY('+dy+'px)'});
-  const end=()=>{if(y0==null)return;y0=null;if(dy>90){box.style.transform='';closeSheet()}else{box.style.transition='transform .3s var(--spring)';box.style.transform='';setTimeout(()=>box.style.transition='',320)}box.style.animation=''};
-  g.addEventListener('pointerup',end);g.addEventListener('pointercancel',end)})();
+(function(){const box=$('sheet').querySelector('.sbox'),g=$('grab');
+  /* swipe down anywhere on the sheet (when scrolled to the top) or on the handle to close it */
+  let y0=null,x0=0,dy=0,drag=false,fromGrab=false;
+  const skip=t=>t.closest&&t.closest('video,iframe,input,textarea,.seg,.chips');
+  box.addEventListener('touchstart',e=>{if(e.touches.length!==1){y0=null;return}const t=e.target;fromGrab=t===g||g.contains(t);
+    if(!fromGrab&&(skip(t)||box.scrollTop>0)){y0=null;return}
+    y0=e.touches[0].clientY;x0=e.touches[0].clientX;dy=0;drag=false},{passive:true});
+  box.addEventListener('touchmove',e=>{if(y0==null)return;const t=e.touches[0],d=t.clientY-y0;
+    if(!drag){if(Math.abs(t.clientX-x0)>Math.abs(d)&&Math.abs(t.clientX-x0)>8){y0=null;return}if(d>8&&(fromGrab||box.scrollTop<=0)){drag=true;box.style.animation='none';box.style.transition='none'}else if(d<-8){y0=null;return}else return}
+    dy=Math.max(0,d);box.style.transform='translateY('+dy+'px)';if(e.cancelable)e.preventDefault()},{passive:false});
+  const end=()=>{if(y0==null)return;const was=drag;y0=null;drag=false;if(!was)return;
+    if(dy>90){box.style.transition='';box.style.transform='';box.style.animation='';closeSheet()}
+    else{box.style.transition='transform .3s var(--spring)';box.style.transform='';setTimeout(()=>{box.style.transition='';box.style.animation=''},320)}};
+  box.addEventListener('touchend',end);box.addEventListener('touchcancel',end)})();
 
 /* ---------- resume where you stopped ---------- */
 const fmtT=s=>{s=Math.floor(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(x).padStart(2,'0')};
@@ -563,15 +577,15 @@ function rInfo(){
   ${stepper('per','Vidéos affichées par chaîne','la dernière est toujours gardée',CFG.per,v=>String(v))}
   ${stepper('age','Âge maximum','au-delà, seule la dernière reste',CFG.age,v=>v?v+' j':'Aucun')}
   <div class="hh">Chaînes suivies</div>
-  <div id="chl">${(CH||[]).map(c=>`<div class="crow tap" data-e="${c.k}"><i style="--c:${colOf(c.name)}"></i><div>${esc(c.name)}<small>@${esc(c.handle)}${c.n?' · '+c.n+' vidéo'+(c.n>1?'s':''):''}${c.age!=null?' · '+(c.age?c.age+' j':'sans limite d\'âge'):''}</small></div><span class="chev">›</span></div>`).join('')||'<p class="note">Aucune chaîne.</p>'}</div>
+  <div id="chl">${(CH||[]).map(c=>`<div class="crow tap" data-e="${c.k}"><i style="--c:${colOf(c.name)}"></i><div>${esc(c.name)}<small>@${esc(c.handle)}${c.err?' · <span class="bad">'+esc(c.err)+'</span>':c.nv!=null?' · '+c.nv+' récente'+(c.nv>1?'s':''):''}${c.n?' · '+c.n+' vidéo'+(c.n>1?'s':''):''}${c.age!=null?' · '+(c.age?c.age+' j':'sans limite d\'âge'):''}</small></div><span class="chev">›</span></div>`).join('')||'<p class="note">Aucune chaîne.</p>'}</div>
   <button class="btn" id="addch">＋ Ajouter une chaîne (@)</button>
   <div class="hh">Données</div><p class="note">Dernière collecte du serveur : ${DATA.updated?new Date(DATA.updated).toLocaleString('fr-FR',{weekday:'long',hour:'2-digit',minute:'2-digit',day:'numeric',month:'long'}):'jamais'} · ${vs} vidéo${vs>1?'s':''} dans le fil.</p>
   <div class="hh">Aether</div>
   <button class="btn" id="toaeth">Envoyer le temps d'écran à Aether</button>
   <p class="note">Copie les 14 derniers jours. Ouvre ensuite Aether > Focus > Temps d'écran et appuie sur « Coller depuis Signal ».</p>
   <button class="btn" id="apis">Sources de données</button>
-  <button class="btn" id="resetSeen">Tout marquer comme non vu</button><button class="btn primary" id="x">Fermer</button>`);
-  $('x').onclick=closeSheet;$('addch').onclick=()=>rChan(null);$('apis').onclick=rApis;$('toaeth').onclick=sendAether;
+  <button class="btn" id="resetSeen">Tout marquer comme non vu</button><button class="btn" id="retryCh">Relire toutes les chaînes maintenant</button><button class="btn primary" id="x">Enregistrer</button>`);
+  $('x').onclick=()=>{saveLIM();saveCFG();saveCH();saveVID();render();closeSheet();toast('Réglages enregistrés')};$('addch').onclick=()=>rChan(null);$('apis').onclick=rApis;$('toaeth').onclick=sendAether;
   const S={wk:[0,480,5,()=>LIM.wk,v=>LIM.wk=v,saveLIM],we:[0,480,5,()=>LIM.we==null?LIM.wk:LIM.we,v=>LIM.we=v,saveLIM],per:[1,10,1,()=>CFG.per,v=>CFG.per=v,saveCFG],age:[0,120,1,()=>CFG.age,v=>CFG.age=v,saveCFG]};
   const fm={wk:fmtMin,we:fmtMin,per:v=>String(v),age:v=>v?v+' j':'Aucun'};
   const sbox=$('sbody');
@@ -587,6 +601,7 @@ function rInfo(){
     const r=e.target.closest('#res button');if(r){CFG.res=r.dataset.k;saveCFG();[...$('res').children].forEach(x=>x.classList.toggle('on',x===r));return}
     const a=e.target.closest('#apip button');if(a){CFG.autopip=a.dataset.k==='true';saveCFG();[...$('apip').children].forEach(x=>x.classList.toggle('on',x===a));return}
     const c=e.target.closest('[data-e]');if(c){rChan(c.dataset.e);return}
+    if(e.target.id==='retryCh'){CH.forEach(c=>{c.t=0;c.fails=0});closeSheet();load(true);toast('Mise à jour…');return}
     if(e.target.id==='resetSeen'){seen={};st('sig_seen',seen);closeSheet();render()}
   };
 }
@@ -613,6 +628,7 @@ function rChan(k){
   const ch=k?CH.find(c=>c.k===k):null;
   openSheet(`<h2>${ch?'Modifier la chaîne':'Ajouter une chaîne'}</h2>
   <div class="fld"><label>Identifiant YouTube (@)</label><input id="c-h" placeholder="@Micode" value="${ch?'@'+esc(ch.handle):''}" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+  <div class="fld"><label>ID de chaîne (facultatif, UC…)</label><input id="c-i" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx" value="${ch&&ch.id?esc(ch.id):''}" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
   <div class="fld"><label>Nom affiché</label><input id="c-n" placeholder="Comme dans l'app" value="${ch?esc(ch.name):''}" maxlength="24"></div>
   <div class="step"><div><label>Vidéos dans le fil</label><small>par défaut : ${CFG.per}</small></div><div class="stp"><button data-s="n" data-d="-1">−</button><b id="v-n">${ch&&ch.n?ch.n:'Défaut'}</b><button data-s="n" data-d="1">+</button></div></div>
   <div class="step"><div><label>Âge maximum</label><small>la dernière vidéo reste toujours</small></div><div class="stp"><button data-s="a" data-d="-1">−</button><b id="v-a">${ch&&ch.age!=null?(ch.age?ch.age+' j':'Aucun'):'Défaut'}</b><button data-s="a" data-d="1">+</button></div></div>
@@ -633,16 +649,17 @@ function rChan(k){
     if(!h){$('c-st').textContent='Il faut un @.';return}
     if(CH.some(c=>c.handle.toLowerCase()===h.toLowerCase()&&(!ch||c.k!==ch.k))){$('c-st').textContent='Cette chaîne est déjà suivie.';return}
     const btn=$('c-ok');btn.disabled=true;
-    if(ch&&h.toLowerCase()===ch.handle.toLowerCase()){ch.name=name||ch.name;ch.n=n;ch.age=a;saveCH();render();rInfo();return}
+    const mid=(/(UC[0-9A-Za-z_-]{22})/.exec($('c-i').value)||[])[1]||null;
+    if(ch&&h.toLowerCase()===ch.handle.toLowerCase()&&(!mid||mid===ch.id)){ch.name=name||ch.name;ch.n=n;ch.age=a;saveCH();render();rInfo();return}
     $('c-st').textContent='Recherche de @'+h+'…';
     try{
-      const id=await resolveHandle(h);
+      const id=mid||await resolveHandle(h);
       $('c-st').textContent='Chaîne trouvée, lecture des vidéos…';
       const r=await fetchFeed({id,handle:h});
       const found=r.title||h;
       if(!name)name=found.slice(0,24);
       const nc=ch||{k:uid(),rules:null};
-      Object.assign(nc,{name,handle:h,id,n,age:a,found});
+      Object.assign(nc,{name,handle:h,id,n,age:a,found,err:null,fails:0});
       if(!ch)CH.push(nc);
       VID[nc.k]=(await noShorts(nc,r.videos)).slice(0,15).map(v=>({id:v.id,title:v.title,published:v.published}));
       saveCH();saveVID();render();
