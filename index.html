@@ -270,6 +270,7 @@ async function resolveHandle(h){
   h=h.replace(/^@/,'').trim();
   const yt='https://www.youtube.com/@'+h;
   const fns=[];
+  fns.push(async()=>{const d=await getJ('https://yt.lemnoslife.com/channels?part=id&handle=@'+encodeURIComponent(h),5000);const x=d&&d.items&&d.items[0];return x&&x.id&&/^UC/.test(x.id)?x.id:null});
   fns.push(()=>api(null,'/api/v1/resolveurl?url='+encodeURIComponent(yt),null,d=>d&&d.ucid?d.ucid:null));
   viaProxy(yt).forEach(f=>fns.push(async()=>{const html=await f();for(const rx of [/<meta itemprop="(?:identifier|channelId)" content="(UC[0-9A-Za-z_-]{22})"/,/"externalId":"(UC[0-9A-Za-z_-]{22})"/,/rel="canonical" href="https:\/\/www\.youtube\.com\/channel\/(UC[0-9A-Za-z_-]{22})"/,/"channelId":"(UC[0-9A-Za-z_-]{22})"/]){const m=rx.exec(html);if(m)return m[1]}return null}));
   fns.push(()=>api('/search?q='+encodeURIComponent(h)+'&filter=channels',null,d=>{const it=(d&&d.items||[])[0];const m=it&&/(UC[0-9A-Za-z_-]{22})/.exec(it.url||'');return m?m[1]:null},null));
@@ -304,7 +305,10 @@ async function noShorts(ch,vids){
 async function fetchFeed(ch){
   if(!ch.id)ch.id=await resolveHandle(ch.handle);
   const url='https://www.youtube.com/feeds/videos.xml?channel_id='+ch.id;
-  const fns=viaProxy(url).map(f=>async()=>{const r=parseRss(await f());return r.videos.length?r:null});
+  const fns=[async()=>{const d=await getJ('https://api.rss2json.com/v1/api.json?rss_url='+encodeURIComponent(url),6000);
+    if(!d||d.status!=='ok'||!(d.items||[]).length)return null;
+    return{title:(d.feed&&d.feed.title)||'',videos:d.items.map(x=>({id:(/(?:yt:video:|v=)([\w-]{11})/.exec((x.guid||'')+' '+(x.link||''))||[])[1],title:(x.title||'').trim(),published:new Date(String(x.pubDate).replace(' ','T')+'Z').toISOString()})).filter(x=>x.id)}}];
+  viaProxy(url).forEach(f=>fns.push(async()=>{const r=parseRss(await f());return r.videos.length?r:null}));
   fns.push(()=>api('/channel/'+ch.id,'/api/v1/channels/'+ch.id+'/latest',
     d=>d&&d.relatedStreams?{title:d.name,videos:d.relatedStreams.filter(x=>x.type!=='channel'&&x.url).map(x=>({id:(/v=([\w-]{11})/.exec(x.url)||[])[1],title:x.title,published:new Date(x.uploaded>1e11?x.uploaded:Date.now()).toISOString(),isShort:x.isShort,len:x.duration})).filter(x=>x.id)}:null,
     d=>Array.isArray(d)?{title:'',videos:d.map(x=>({id:x.videoId,title:x.title,published:new Date((x.published||0)*1000).toISOString(),len:x.lengthSeconds}))}:null));
@@ -312,13 +316,13 @@ async function fetchFeed(ch){
 }
 async function refreshChannels(force){
   const now0=Date.now(),wait=c=>c.fails?Math.min(30,5*Math.pow(2,c.fails-1))*60000:3*60000;     // failing channels are retried less and less often
-  const list=CH.filter(c=>force||!c.t||now0-c.t>wait(c)).sort((x,y)=>(x.name===filter?-1:0)-(y.name===filter?-1:0)||(x.t||0)-(y.t||0));let i=0,okn=0,dirty=false,rt=null;
+  const list=CH.filter(c=>force||!c.t||now0-c.t>wait(c)).sort((x,y)=>(x.name===filter?-1:0)-(y.name===filter?-1:0)||(x.t||0)-(y.t||0));let i=0,okn=0,dirty=false,rt=null;prog={n:0,t:list.length};
   const soft=()=>{if(rt||playing)return;rt=setTimeout(()=>{rt=null;if(dirty){dirty=false;render()}},400)};
   const worker=async()=>{while(i<list.length){const ch=list[i++];try{
-    const r=await fetchFeed(ch);
+    const r=await Promise.race([fetchFeed(ch),new Promise((_,rj)=>setTimeout(()=>rj(new Error('trop long')),14000))]);
     const nv=(await noShorts(ch,r.videos)).slice(0,15).map(v=>({id:v.id,title:v.title,published:v.published}));
-    if(JSON.stringify(nv)!==JSON.stringify(VID[ch.k]||[])){VID[ch.k]=nv;dirty=true;soft()}
-    ch.t=Date.now();ch.fails=0;if(r.title&&!ch.found){ch.found=r.title}okn++;
+    if(JSON.stringify(nv)!==JSON.stringify(VID[ch.k]||[])){VID[ch.k]=nv;dirty=true;soft()}else if(!(DATA.videos||[]).length){dirty=true;soft()}
+    ch.t=Date.now();ch.fails=0;if(r.title&&!ch.found){ch.found=r.title}okn++;prog.n++;
   }catch(e){ch.t=Date.now();ch.fails=Math.min(5,(ch.fails||0)+1)}}};
   await Promise.all([worker(),worker(),worker(),worker(),worker(),worker()]);
   saveVID();saveCH();return okn;
@@ -378,7 +382,7 @@ function render(){
   const fresh=[],old=[];vids.forEach(v=>{if((filter==='all'||v.channel===filter)&&!POS[v.id])(seen[v.id]?old:fresh).push(v)});
   let h='';
   if(CH&&!CH.length)h=`<div class="done"><h2>Aucune chaîne</h2><p>Ajoute un créateur avec son @ dans les réglages.</p></div>`;
-  else if(!vids.length&&!cont.length)h=`<div class="done"><h2>Mise à jour…</h2><p>Les vidéos apparaissent dans quelques secondes. Sinon appuie sur ↻.</p></div>`;
+  else if(!vids.length&&!cont.length)h=loading?`<div class="done"><h2>Chargement…</h2><p>${prog.t?'Chaînes lues : '+prog.n+' sur '+prog.t+'.':'Connexion…'}</p></div>`:`<div class="done"><h2>Rien à afficher</h2><p>${DATA.updated?'Aucune vidéo récente.':"Le collecteur n'a encore rien publié et les services publics ne répondent pas."}</p><button class="btn primary" id="retry-all" style="max-width:260px;margin:14px auto 0">Réessayer</button><p style="margin-top:12px">Sur GitHub, onglet Actions, lance le collecteur (Run workflow) pour remplir la liste.</p></div>`;
   else{
     if(cont.length)h+=`<div class="sec"><div class="lbl">À reprendre · ${cont.length}</div></div>`+cont.map((v,i)=>card(v,i,true)).join('');
     if(fresh.length)h+=`<div class="sec"><div class="lbl">Nouveau · ${fresh.length}</div></div>`+fresh.slice(0,PAGE).map((v,i)=>card(v,i)).join('')+(fresh.length>PAGE?`<button class="more" id="morefresh">Voir plus · ${fresh.length-PAGE}</button>`:'');
@@ -699,16 +703,17 @@ document.addEventListener('click',e=>{
   const c=e.target.closest('.chip');if(c){filter=c.dataset.f;showSeen=false;PAGE=12;animNext=true;render();return}
   if(e.target.id==='toggleSeen'){showSeen=!showSeen;render()}
   if(e.target.id==='morefresh'){PAGE+=12;render()}
+  if(e.target.id==='retry-all')load(true)
 });
 $('info').onclick=rInfo;
 $('search').onclick=()=>rSearch();
 $('refresh').onclick=()=>load(true);
 
-let loading=false,lastLoad=0;
+let loading=false,lastLoad=0,prog={n:0,t:0},lastErr=0;
 async function load(force){
   if(loading)return;loading=true;lastLoad=Date.now();
   const b=$('refresh');b.classList.add('spin');
-  const srv=fetch('videos.json?t='+Date.now(),{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{if(d){DATA=d;st('sig_cache',DATA)}}).catch(()=>{});
+  const srv=fetch('videos.json?t='+Date.now(),{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{if(d&&((d.videos||[]).length||!(DATA.videos||[]).length)){DATA=d;st('sig_cache',DATA)}}).catch(()=>{});
   try{await seedChannels()}catch(e){}
   if(!playing)render();
   try{await Promise.all([refreshChannels(force===true),srv])}catch(e){}
